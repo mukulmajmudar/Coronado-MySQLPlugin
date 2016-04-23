@@ -9,10 +9,11 @@ import tempfile
 import argh
 from argh import CommandError
 from Coronado.Config import Config as ConfigBase
-from Coronado.Plugin import AppPlugin as AppPluginBase, CommandLinePlugin as CLPluginBase
+from Coronado.Plugin import AppPlugin as AppPluginBase, \
+        CommandLinePlugin as CLPluginBase
 import Coronado.Testing
-import MySQLdb
-from MySQLdb.cursors import DictCursor
+import pymysql
+from pymysql.cursors import DictCursor
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ class Config(ConfigBase):
 def getMysqlConnection(context):
     # Connect to MySQL
     mysqlArgs = context['mysql']
-    database = MySQLdb.connect(host=mysqlArgs['host'],
+    database = pymysql.connect(host=mysqlArgs['host'],
             user=mysqlArgs['user'], passwd=mysqlArgs['password'],
             db=mysqlArgs['dbName'], use_unicode=True, charset='utf8',
             cursorclass=DictCursor)
@@ -90,7 +91,7 @@ class AppPlugin(AppPluginBase):
     pluginId = 'mysqlPlugin'
     context = None
 
-    def setup(self, application, context):
+    def start(self, application, context):
         self.context = context
 
         if 'database' not in context:
@@ -105,7 +106,8 @@ class AppPlugin(AppPluginBase):
 
         application.addToContextFlatten(
         {
-            'public': ['database']
+            'public': ['database', 'getNewDbConnection'],
+            'non-public': ['database']
         })
 
 
@@ -232,6 +234,7 @@ class CommandLinePlugin(CLPluginBase):
         return self.execute(mysql['schemaFilePath'])
 
 
+    # pylint: disable=unused-argument
     def installFixture(self, schemaFilePath, fixtureFilePath):
         # Re-install schema
         logger.info('Reinstalling schema...')
@@ -252,7 +255,8 @@ class CommandLinePlugin(CLPluginBase):
             help='one of "debug", "info", "warning", "error", and "critical"')
     @argh.arg('--logFormat', 
             help='Python-like log format (see Python docs for details)')
-    def mergeFixture(self, fixtureFilePath, ignoreConflicts=False, logLevel='warning',
+    def mergeFixture(self, fixtureFilePath, ignoreConflicts=False,
+            logLevel='warning',
             logFormat='%(levelname)s:%(name)s (at %(asctime)s): %(message)s'):
         Coronado.configureLogging(level=logLevel, format=logFormat)
 
@@ -274,9 +278,10 @@ class CommandLinePlugin(CLPluginBase):
         with closing(getMysqlConnection(self.context)) as db:
             with closing(db.cursor()) as cursor:
                 try:
-                    cursor.execute('SELECT * FROM metadata WHERE attribute = %s',
+                    cursor.execute('''SELECT * FROM metadata
+                            WHERE attribute = %s''',
                             ('version',))
-                except MySQLdb.ProgrammingError as e:
+                except pymysql.ProgrammingError as e:
                     # 1146 == table does not exist
                     if e.args[0] == 1146:
                         # Version 1 tables don't exist either, so it is most
@@ -316,8 +321,9 @@ class CommandLinePlugin(CLPluginBase):
         currentVersion = getCurrentVersion()
 
         if currentVersion is None:
-            raise CommandError('It seems there is no schema currently installed. ' +
-                    'You can install a schema with the "install" command.')
+            raise CommandError('It seems there is no schema ' +
+                'currently installed. You can install a schema with ' +
+                'the "install" command.')
         elif currentVersion == targetVersion:
             raise CommandError('Schema version ' + currentVersion 
                     + ' is already installed')
@@ -330,11 +336,13 @@ class CommandLinePlugin(CLPluginBase):
 
         # Get module for target version
         targetVersMod = importlib.import_module(
-                self.context['databasePkg'].__name__ + '.v' + str(targetVersion))
+                self.context['databasePkg'].__name__ + '.v' +
+                str(targetVersion))
 
         # Make sure it has an upgrade function
         if not hasattr(targetVersMod, 'upgrade'):
-            raise CommandError('Version ' + targetVersion + ' does not support ' +
+            raise CommandError('Version ' + targetVersion +
+                    ' does not support ' +
                     'the upgrade operation (hint: overlay and trim ' +
                     'may be supported).')
 
@@ -358,11 +366,11 @@ class CommandLinePlugin(CLPluginBase):
         '''
         Overlay a schema on top of the currently installed one.
 
-        Overlaying is a non-destructive, backwards-compatible first-step for schema
-        migration. After overlaying, a superimposition of the current and target
-        schemas will be installed. This is useful when both versions need to
-        be simultaneously supported. When the previous version is no longer needed,
-        perform a "trim" operation on the database.
+        Overlaying is a non-destructive, backwards-compatible first-step for
+        schema migration. After overlaying, a superimposition of the current
+        and target schemas will be installed. This is useful when both versions
+        need to be simultaneously supported. When the previous version is no
+        longer needed, perform a "trim" operation on the database.
 
         This will call the application's target version's overlay function. 
         '''
@@ -371,8 +379,9 @@ class CommandLinePlugin(CLPluginBase):
         currentVersion = getCurrentVersion()
 
         if currentVersion is None:
-            raise CommandError('It seems there is no schema currently installed. ' +
-                    'You can install a schema with the "install" command.')
+            raise CommandError('It seems there is no schema ' +
+                'currently installed. You can install a schema with ' +
+                'the "install" command.')
         elif currentVersion == targetVersion:
             raise CommandError('Schema version ' + currentVersion 
                     + ' is already installed')
@@ -385,12 +394,13 @@ class CommandLinePlugin(CLPluginBase):
 
         # Get module for target version
         targetVersMod = importlib.import_module(
-                self.context['databasePkg'].__name__ + '.v' + str(targetVersion))
+                self.context['databasePkg'].__name__ + '.v' +
+                str(targetVersion))
 
         # Make sure it has an overlay function
         if not hasattr(targetVersMod, 'overlay'):
-            raise CommandError('Version ' + targetVersion + ' does support the ' +
-                    'overlay operation.')
+            raise CommandError('Version ' + targetVersion +
+                    ' does support the overlay operation.')
 
         # Delegate to appropriate upgrade function
         with closing(getMysqlConnection(self.context)) as db:
@@ -412,12 +422,12 @@ class CommandLinePlugin(CLPluginBase):
             logFormat='%(levelname)s:%(name)s (at %(asctime)s): %(message)s'):
         '''
         Trim the database to remove any data from a previous schema version 
-        that is now irrelevant to the reference schema version and thus obsolete.
-        This operation should be performed once the previous schema version no 
-        longer needs to be supported.
+        that is now irrelevant to the reference schema version and thus
+        obsolete.  This operation should be performed once the previous schema
+        version no longer needs to be supported.
 
-        This will call the application's reference version's trim function. If no
-        reference version is specified, this will trim with reference to the 
+        This will call the application's reference version's trim function. If
+        no reference version is specified, this will trim with reference to the
         currently installed schema version.
         '''
         Coronado.configureLogging(level=logLevel, format=logFormat)
@@ -426,7 +436,8 @@ class CommandLinePlugin(CLPluginBase):
             referenceVersion = getCurrentVersion()
 
         if referenceVersion is None:
-            raise CommandError('It seems there is no schema currently installed.')
+            raise CommandError('It seems there is no schema ' +
+                'currently installed.')
 
         # Get module for target version
         refVersMod = importlib.import_module(
@@ -443,8 +454,8 @@ class CommandLinePlugin(CLPluginBase):
             trimVersion = refVersMod.previousVersion
 
         # Confirm with user
-        response = askYesOrNoQuestion('Trim is a destructive and irreversible ' +
-                'operation. Are you sure you want to proceed?')
+        response = askYesOrNoQuestion('Trim is a destructive and ' +
+            'irreversible operation. Are you sure you want to proceed?')
 
         if response == 'y':
             # Delegate to appropriate upgrade function
@@ -479,7 +490,7 @@ def _installFixture(database, fixture, ignoreConflicts):
             with closing(database.cursor()) as cursor:
                 try:
                     cursor.execute(query, tuple(row.values()))
-                except MySQLdb.IntegrityError:
+                except pymysql.IntegrityError:
                     if ignoreConflicts:
                         logger.info('Ignoring conflict in table %s', tableName)
                         continue
