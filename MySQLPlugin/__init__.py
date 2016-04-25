@@ -22,7 +22,7 @@ class Config(ConfigBase):
     def __init__(self, keys=None): 
         if keys is None:
             keys = []
-        super(Config, self).__init__(
+        super().__init__(
         [
             'databasePkg',
             'mysql'
@@ -88,8 +88,10 @@ def getMysqlConnection(context):
 
 
 class AppPlugin(AppPluginBase):
-    pluginId = 'mysqlPlugin'
     context = None
+
+    def getId(self):
+        return 'mysqlPlugin'
 
     def start(self, application, context):
         self.context = context
@@ -104,11 +106,7 @@ class AppPlugin(AppPluginBase):
         # Check Database schema version matches what is expected
         self.checkDbSchemaVersion()
 
-        application.addToContextFlatten(
-        {
-            'public': ['database', 'getNewDbConnection'],
-            'non-public': ['database']
-        })
+        self.context['shortcutAttrs'] += ['database', 'getNewDbConnection']
 
 
     def getCurrDbSchemaVersion(self):
@@ -544,12 +542,12 @@ class FixtureMixin(Coronado.Testing.TestRoot):
         self._mysqlArgs = context['mysql']
 
         # Call parent constructor
-        super(FixtureMixin, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
 
     def setUp(self):
         # Call parent version
-        super(FixtureMixin, self).setUp()
+        super().setUp()
 
         # Get the fixture
         fixture = self._getFixture()
@@ -571,7 +569,7 @@ class FixtureMixin(Coronado.Testing.TestRoot):
         Truncate all tables.
         '''
         # Call parent version
-        super(FixtureMixin, self).tearDown()
+        super().tearDown()
 
         if self._mysqlArgs is None:
             return
