@@ -87,6 +87,10 @@ def getMysqlConnection(context):
     return database
 
 
+class SchemaVersionMismatch(Exception):
+    pass
+
+
 class AppPlugin(AppPluginBase):
     context = None
 
@@ -308,7 +312,7 @@ class CommandLinePlugin(CLPluginBase):
             logFormat='%(levelname)s:%(name)s (at %(asctime)s): %(message)s'):
         '''
         Perform a schema upgrade. An upgrade means a complete migration of
-        data to the target version. It is usually safer and more useful to 
+        data to the target version. It may be safer or more useful to 
         wield the overlay-trim duo (as long as database size doesn't become 
         an issue).
 
@@ -316,7 +320,7 @@ class CommandLinePlugin(CLPluginBase):
         '''
         Coronado.configureLogging(level=logLevel, format=logFormat)
 
-        currentVersion = getCurrentVersion()
+        currentVersion = self.getCurrentVersion()
 
         if currentVersion is None:
             raise CommandError('It seems there is no schema ' +
@@ -374,7 +378,7 @@ class CommandLinePlugin(CLPluginBase):
         '''
         Coronado.configureLogging(level=logLevel, format=logFormat)
 
-        currentVersion = getCurrentVersion()
+        currentVersion = self.getCurrentVersion()
 
         if currentVersion is None:
             raise CommandError('It seems there is no schema ' +
@@ -431,7 +435,7 @@ class CommandLinePlugin(CLPluginBase):
         Coronado.configureLogging(level=logLevel, format=logFormat)
 
         if referenceVersion is None:
-            referenceVersion = getCurrentVersion()
+            referenceVersion = self.getCurrentVersion()
 
         if referenceVersion is None:
             raise CommandError('It seems there is no schema ' +
