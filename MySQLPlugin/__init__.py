@@ -247,7 +247,7 @@ class CommandLinePlugin(CLPluginBase):
         db = getMysqlConnection(self.context)
 
         # Load fixture file
-        fixture = json.load(open(fixtureFilePath))
+        fixture = json.load(open(fixtureFilePath, encoding='utf-8'))
 
         # Install the fixture
         installAFixture(db, fixture)
@@ -266,7 +266,7 @@ class CommandLinePlugin(CLPluginBase):
         db = getMysqlConnection(self.context)
 
         # Load fixture file
-        fixture = json.load(open(fixtureFilePath))
+        fixture = json.load(open(fixtureFilePath, encoding='utf-8'))
 
         # Install the fixture
         installAFixture(db, fixture, ignoreConflicts)
@@ -558,7 +558,7 @@ class FixtureMixin(Coronado.Testing.TestRoot):
 
         # If fixture is a file path, load it as JSON
         if isinstance(fixture, str):
-            fixture = json.load(open(fixture))
+            fixture = json.load(open(fixture, encoding='utf-8'))
 
         # Fixture must be a dictionary
         if not isinstance(fixture, dict):
