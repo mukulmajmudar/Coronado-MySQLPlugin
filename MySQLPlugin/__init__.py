@@ -272,7 +272,7 @@ class CommandLinePlugin(CLPluginBase):
         installAFixture(db, fixture, ignoreConflicts)
 
 
-    def getCurrentVersion(self):
+    def getCurrentVersion(self, metadataTableName='metadata'):
         '''
         Get currently installed database schema version.
         '''
@@ -280,9 +280,8 @@ class CommandLinePlugin(CLPluginBase):
         with closing(getMysqlConnection(self.context)) as db:
             with closing(db.cursor()) as cursor:
                 try:
-                    cursor.execute('''SELECT * FROM metadata
-                            WHERE attribute = %s''',
-                            ('version',))
+                    cursor.execute('SELECT * FROM ' + metadataTableName + \
+                            ' WHERE attribute = %s', ('version',))
                 except pymysql.ProgrammingError as e:
                     # 1146 == table does not exist
                     if e.args[0] == 1146:
