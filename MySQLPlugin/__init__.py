@@ -5,6 +5,7 @@ import logging
 from contextlib import closing
 import importlib
 import tempfile
+import time
 
 import argh
 from argh import CommandError
@@ -25,7 +26,8 @@ class Config(ConfigBase):
         super().__init__(
         [
             'databasePkg',
-            'mysql'
+            'mysql',
+            'mysqlNumOfConnectTries'
         ] + keys)
 
 
@@ -68,13 +70,31 @@ class Config(ConfigBase):
         raise NotImplementedError()
 
 
+    def _getMysqlNumOfConnectTries(self):
+        return 10
+
+
 def getMysqlConnection(context):
     # Connect to MySQL
     mysqlArgs = context['mysql']
-    database = pymysql.connect(host=mysqlArgs['host'],
-            user=mysqlArgs['user'], passwd=mysqlArgs['password'],
-            db=mysqlArgs['dbName'], use_unicode=True, charset='utf8',
-            cursorclass=DictCursor)
+    
+    database = None
+    numOfTries = context['mysqlNumOfConnectTries']
+
+    for i in range(numOfTries):
+        try:
+            database = pymysql.connect(host=mysqlArgs['host'],
+                user=mysqlArgs['user'], passwd=mysqlArgs['password'],
+                db=mysqlArgs['dbName'], use_unicode=True, charset='utf8',
+                cursorclass=DictCursor)
+        except pymysql.OperationalError:
+            if i == numOfTries - 1:
+                raise
+            else:
+                time.sleep(1)
+                continue
+        else:
+            break
 
     # Turn on autocommit
     database.autocommit(True)
