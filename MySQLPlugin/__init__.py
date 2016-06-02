@@ -15,6 +15,7 @@ from Coronado.Plugin import AppPlugin as AppPluginBase, \
 import Coronado.Testing
 import pymysql
 from pymysql.cursors import DictCursor
+import tornado.ioloop
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,8 @@ class Config(ConfigBase):
         [
             'databasePkg',
             'mysql',
-            'mysqlNumOfConnectTries'
+            'mysqlNumOfConnectTries',
+            'mysqlCheckConnIntervals'
         ] + keys)
 
 
@@ -74,6 +76,12 @@ class Config(ConfigBase):
         return 10
 
 
+    def _getMysqlCheckConnIntervals(self):
+        return 60
+
+
+connectionPools = []
+
 def getMysqlConnection(context):
     # Connect to MySQL
     mysqlArgs = context['mysql']
@@ -104,7 +112,36 @@ def getMysqlConnection(context):
     with closing(database.cursor()) as cursor:
         cursor.execute("SET wait_timeout=31536000")
 
+    connectionPools.append(database)
+
     return database
+
+
+def checkConnectionPools(context):
+    for index, connection in enumerate(connectionPools):
+        numOfTries = context['mysqlNumOfConnectTries']
+        curIdx = index + 1
+        try:
+            logger.info('Checking MySQL connection #%d...', curIdx)
+            connection.ping(False)
+        except (pymysql.OperationalError, AttributeError):
+            for i in range(numOfTries):
+                try:
+                    logger.info('MySQL connection #%d is lost,' + 
+                        'trying to reconnect...', curIdx)
+                    connection.ping(True)
+                except (pymysql.OperationalError, AttributeError):
+                    if i == numOfTries - 1:
+                        logger.info('MySQL connection #%d is lost. ' + 
+                            'Will try to reconnect at next check.', curIdx)
+                    else:
+                        time.sleep(1)
+                        continue
+                else:
+                    logger.info('MySQL connection #%d is restored.', curIdx)
+                    break
+        else:
+            logger.info('MySQL connection #%d is normal.', curIdx)
 
 
 class SchemaVersionMismatch(Exception):
@@ -131,6 +168,9 @@ class AppPlugin(AppPluginBase):
         self.checkDbSchemaVersion()
 
         self.context['shortcutAttrs'] += ['database', 'getNewDbConnection']
+
+        tornado.ioloop.PeriodicCallback(lambda: checkConnectionPools(context), 
+            context['mysqlCheckConnIntervals'] * 1000).start()
 
 
     def getCurrDbSchemaVersion(self):
