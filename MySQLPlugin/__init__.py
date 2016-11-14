@@ -6,6 +6,7 @@ from contextlib import closing
 import importlib
 import tempfile
 import time
+import subprocess
 
 import argh
 from argh import CommandError
@@ -228,7 +229,7 @@ class CommandLinePlugin(CLPluginBase):
                 self.installSchema,
                 self.installFixture, 
                 self.mergeFixture, 
-                self.getCurrentVersion, 
+                self.getSchemaVersion, 
                 self.upgrade,
                 self.overlay,
                 self.trim
@@ -252,9 +253,7 @@ class CommandLinePlugin(CLPluginBase):
         cmd = 'mysql --host=%s --user=%s --password="%s" %s < %s' \
                 % (mysql['host'], mysql['user'], mysql['password'], 
                         mysql['dbName'], sqlFilePath)
-        rc = os.system(cmd)
-        if rc != 0:
-            raise CommandError('Failed to execute SQL from file')
+        subprocess.check_call(cmd, shell=True)
 
         logger.info('Executed file ' + sqlFilePath + ' successfully.')
 
@@ -278,9 +277,7 @@ class CommandLinePlugin(CLPluginBase):
                 --execute="DROP DATABASE IF EXISTS \\`%s\\`"' \
                 % (mysql['host'], mysql['user'], mysql['password'],
                         mysql['dbName'])
-        rc = os.system(cmd)
-        if rc != 0:
-            raise CommandError('Failed to drop previous database')
+        subprocess.check_call(cmd, shell=True)
 
         logger.info('Creating database...')
 
@@ -289,9 +286,7 @@ class CommandLinePlugin(CLPluginBase):
                 --execute="CREATE DATABASE \\`%s\\`"' \
                 % (mysql['host'], mysql['user'], mysql['password'],
                         mysql['dbName'])
-        rc = os.system(cmd)
-        if rc != 0:
-            raise CommandError('Failed to create database')
+        subprocess.check_call(cmd, shell=True)
 
         return self.execute(mysql['schemaFilePath'])
 
@@ -332,7 +327,7 @@ class CommandLinePlugin(CLPluginBase):
         installAFixture(db, fixture, ignoreConflicts)
 
 
-    def getCurrentVersion(self, metadataTableName='metadata'):
+    def getSchemaVersion(self, metadataTableName='metadata'):
         '''
         Get currently installed database schema version.
         '''
@@ -379,7 +374,7 @@ class CommandLinePlugin(CLPluginBase):
         '''
         Coronado.configureLogging(level=logLevel, format=logFormat)
 
-        currentVersion = self.getCurrentVersion()
+        currentVersion = self.getSchemaVersion()
 
         if currentVersion is None:
             raise CommandError('It seems there is no schema ' +
@@ -437,7 +432,7 @@ class CommandLinePlugin(CLPluginBase):
         '''
         Coronado.configureLogging(level=logLevel, format=logFormat)
 
-        currentVersion = self.getCurrentVersion()
+        currentVersion = self.getSchemaVersion()
 
         if currentVersion is None:
             raise CommandError('It seems there is no schema ' +
@@ -494,7 +489,7 @@ class CommandLinePlugin(CLPluginBase):
         Coronado.configureLogging(level=logLevel, format=logFormat)
 
         if referenceVersion is None:
-            referenceVersion = self.getCurrentVersion()
+            referenceVersion = self.getSchemaVersion()
 
         if referenceVersion is None:
             raise CommandError('It seems there is no schema ' +
@@ -649,9 +644,7 @@ class FixtureMixin(Coronado.Testing.TestRoot):
                         self._mysqlArgs['password'],
                         self._mysqlArgs['dbName'])
 
-        rc = os.system(cmd)
-        if rc != 0:
-            raise TestEnvironmentError('Failed to reset database')
+        subprocess.check_call(cmd, shell=True)
 
 
     def _getFixture(self):
