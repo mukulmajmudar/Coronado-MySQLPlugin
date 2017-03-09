@@ -10,100 +10,30 @@ import subprocess
 
 import argh
 from argh import CommandError
-from Coronado.Config import Config as ConfigBase
 from Coronado.Plugin import AppPlugin as AppPluginBase, \
         CommandLinePlugin as CLPluginBase
-import Coronado.Testing
 import pymysql
 from pymysql.cursors import DictCursor
-import tornado.ioloop
 
 logger = logging.getLogger(__name__)
 
-class Config(ConfigBase):
-
-    def __init__(self, keys=None): 
-        if keys is None:
-            keys = []
-        super().__init__(
-        [
-            'databasePkg',
-            'mysql',
-            'mysqlNumOfConnectTries',
-            'mysqlCheckConnIntervals'
-        ] + keys)
-
-
-    def _getDatabasePkg(self):
-        raise NotImplementedError()
-
-
-    def _getMysql(self):
-        return \
-        {
-            'host': self._getMysqlHost(),
-            'port': self._getMysqlPort(),
-            'user': self._getMysqlUser(),
-            'password': self._getMysqlPassword(),
-            'dbName': self._getMysqlDbName(),
-            'schemaFilePath': self._getMySchemaFilePath()
-        }
-
-    def _getMysqlHost(self):
-        return 'localhost'
-
-
-    def _getMysqlPort(self):
-        return 3306
-
-
-    def _getMysqlUser(self):
-        raise NotImplementedError()
-
-
-    def _getMysqlPassword(self):
-        raise NotImplementedError()
-
-
-    def _getMysqlDbName(self):
-        raise NotImplementedError()
-
-
-    def _getMySchemaFilePath(self):
-        raise NotImplementedError()
-
-
-    def _getMysqlNumOfConnectTries(self):
-        return 10
-
-
-    def _getMysqlCheckConnIntervals(self):
-        return 60
-
-
-connectionPools = []
+config = \
+{
+    'mysqlSchemaPackage': None,
+    'mysqlHost': 'localhost',
+    'mysqlPort': 3306,
+    'mysqlUser': None,
+    'mysqlPassword': None,
+    'mysqpDbName': None,
+    'mySchemaFilePath': None
+}
 
 def getMysqlConnection(context):
     # Connect to MySQL
-    mysqlArgs = context['mysql']
-    
-    database = None
-    numOfTries = context['mysqlNumOfConnectTries']
-
-    for i in range(numOfTries):
-        try:
-            database = pymysql.connect(host=mysqlArgs['host'],
-                user=mysqlArgs['user'], passwd=mysqlArgs['password'],
-                db=mysqlArgs['dbName'], use_unicode=True, charset='utf8',
-                cursorclass=DictCursor)
-        except pymysql.OperationalError:
-            if i == numOfTries - 1:
-                raise
-            else:
-                time.sleep(1)
-                continue
-        else:
-            break
+    database = pymysql.connect(host=context['mysqlHost'],
+        user=context['mysqlUser'], passwd=context['mysqlPassword'],
+        db=context['mysqlDbName'], use_unicode=True, charset='utf8',
+        cursorclass=DictCursor)
 
     # Turn on autocommit
     database.autocommit(True)
@@ -113,36 +43,7 @@ def getMysqlConnection(context):
     with closing(database.cursor()) as cursor:
         cursor.execute("SET wait_timeout=31536000")
 
-    connectionPools.append(database)
-
     return database
-
-
-def checkConnectionPools(context):
-    for index, connection in enumerate(connectionPools):
-        numOfTries = context['mysqlNumOfConnectTries']
-        curIdx = index + 1
-        try:
-            logger.info('Checking MySQL connection #%d...', curIdx)
-            connection.ping(False)
-        except (pymysql.OperationalError, AttributeError):
-            for i in range(numOfTries):
-                try:
-                    logger.info('MySQL connection #%d is lost,' + 
-                        'trying to reconnect...', curIdx)
-                    connection.ping(True)
-                except (pymysql.OperationalError, AttributeError):
-                    if i == numOfTries - 1:
-                        logger.info('MySQL connection #%d is lost. ' + 
-                            'Will try to reconnect at next check.', curIdx)
-                    else:
-                        time.sleep(1)
-                        continue
-                else:
-                    logger.info('MySQL connection #%d is restored.', curIdx)
-                    break
-        else:
-            logger.info('MySQL connection #%d is normal.', curIdx)
 
 
 class SchemaVersionMismatch(Exception):
@@ -155,7 +56,7 @@ class AppPlugin(AppPluginBase):
     def getId(self):
         return 'mysqlPlugin'
 
-    def start(self, application, context):
+    def start(self, context):
         self.context = context
 
         if 'database' not in context:
@@ -169,9 +70,6 @@ class AppPlugin(AppPluginBase):
         self.checkDbSchemaVersion()
 
         self.context['shortcutAttrs'] += ['database', 'getNewDbConnection']
-
-        tornado.ioloop.PeriodicCallback(lambda: checkConnectionPools(context), 
-            context['mysqlCheckConnIntervals'] * 1000).start()
 
 
     def getCurrDbSchemaVersion(self):
@@ -205,7 +103,7 @@ class AppPlugin(AppPluginBase):
         currentVersion = self.getCurrDbSchemaVersion()
 
         # Get most recent version from context
-        expectedVersion = self.context['databasePkg'].versions[-1]
+        expectedVersion = self.context['mysqlSchemaPackage'].versions[-1]
 
         if currentVersion != expectedVersion:
             raise SchemaVersionMismatch(
@@ -227,8 +125,7 @@ class CommandLinePlugin(CLPluginBase):
             [
                 self.execute,
                 self.installSchema,
-                self.installFixture, 
-                self.mergeFixture, 
+                self.importData, 
                 self.getSchemaVersion, 
                 self.upgrade,
                 self.overlay,
@@ -246,13 +143,14 @@ class CommandLinePlugin(CLPluginBase):
         '''
         Execute the SQL file at the given path.
         '''
-        mysql = self.context['mysql']
+        context = self.context
 
         logger.info('Executing SQL from file %s...', (sqlFilePath,))
 
         cmd = 'mysql --host=%s --user=%s --password="%s" %s < %s' \
-                % (mysql['host'], mysql['user'], mysql['password'], 
-                        mysql['dbName'], sqlFilePath)
+                % (context['mysqlHost'], context['mysqlUser'],
+                        context['mysqlPassword'], context['mysqlDbName'],
+                        sqlFilePath)
         subprocess.check_call(cmd, shell=True)
 
         logger.info('Executed file ' + sqlFilePath + ' successfully.')
@@ -269,14 +167,15 @@ class CommandLinePlugin(CLPluginBase):
 
         Warning: this will wipe out any existing database!
         '''
-        Coronado.configureLogging(level=logLevel, format=logFormat)
-        mysql = self.context['mysql']
+        logging.basicConfig(level=getattr(logging, logLevel.upper(),
+            logging.NOTSET), format=logFormat)
+        context = self.context
 
         # Drop database if exists
         cmd = 'mysql --host=%s --user=%s --password="%s" \
                 --execute="DROP DATABASE IF EXISTS \\`%s\\`"' \
-                % (mysql['host'], mysql['user'], mysql['password'],
-                        mysql['dbName'])
+                % (context['mysqlHost'], context['mysqlUser'],
+                        context['mysqlPassword'], context['mysqlDbName'])
         subprocess.check_call(cmd, shell=True)
 
         logger.info('Creating database...')
@@ -284,47 +183,46 @@ class CommandLinePlugin(CLPluginBase):
         # Create database
         cmd = 'mysql --host=%s --user=%s --password="%s" \
                 --execute="CREATE DATABASE \\`%s\\`"' \
-                % (mysql['host'], mysql['user'], mysql['password'],
-                        mysql['dbName'])
+                % (context['mysqlHost'], context['mysqlUser'], context['mysqlPassword'],
+                        context['mysqlDbName'])
         subprocess.check_call(cmd, shell=True)
 
-        return self.execute(mysql['schemaFilePath'])
-
-
-    # pylint: disable=unused-argument
-    def installFixture(self, schemaFilePath, fixtureFilePath):
-        # Re-install schema
-        logger.info('Reinstalling schema...')
-        installSchema()
-        logger.info('Installing fixture...')
-
-        # Get a database connection
-        db = getMysqlConnection(self.context)
-
-        # Load fixture file
-        fixture = json.load(open(fixtureFilePath, encoding='utf-8'))
-
-        # Install the fixture
-        installAFixture(db, fixture)
+        return self.execute(context['mySchemaFilePath'])
 
 
     @argh.arg('-l', '--logLevel', 
             help='one of "debug", "info", "warning", "error", and "critical"')
     @argh.arg('--logFormat', 
             help='Python-like log format (see Python docs for details)')
-    def mergeFixture(self, fixtureFilePath, ignoreConflicts=False,
+    def importData(self, jsonDataFilePath, ignoreConflicts=False,
             logLevel='warning',
             logFormat='%(levelname)s:%(name)s (at %(asctime)s): %(message)s'):
-        Coronado.configureLogging(level=logLevel, format=logFormat)
+        logging.basicConfig(level=getattr(logging, logLevel.upper(),
+            logging.NOTSET), format=logFormat)
 
         # Get a database connection
         db = getMysqlConnection(self.context)
 
-        # Load fixture file
-        fixture = json.load(open(fixtureFilePath, encoding='utf-8'))
+        # Load data file
+        tables = json.load(open(jsonDataFilePath, encoding='utf-8'))
 
-        # Install the fixture
-        installAFixture(db, fixture, ignoreConflicts)
+        # Import
+        for table in tables:
+            logger.info('Installing table %s', table['name'])
+            for row in table['rows']:
+                query = 'INSERT INTO ' + table['name'] + ' (' \
+                        + ','.join(row.keys()) \
+                        + ') VALUES (' + '%s' + ',%s' * (len(row) -1) + ')'
+                with closing(database.cursor()) as cursor:
+                    try:
+                        cursor.execute(query, tuple(row.values()))
+                    except pymysql.IntegrityError:
+                        if ignoreConflicts:
+                            logger.info('Ignoring conflict in table %s',
+                                    table['name'])
+                            continue
+                        else:
+                            raise
 
 
     def getSchemaVersion(self, metadataTableName='metadata'):
@@ -372,7 +270,8 @@ class CommandLinePlugin(CLPluginBase):
 
         This will call the application's target version's upgrade function. 
         '''
-        Coronado.configureLogging(level=logLevel, format=logFormat)
+        logging.basicConfig(level=getattr(logging, logLevel.upper(),
+            logging.NOTSET), format=logFormat)
 
         currentVersion = self.getSchemaVersion()
 
@@ -388,11 +287,11 @@ class CommandLinePlugin(CLPluginBase):
 
         # Default target version is the latest one available
         if targetVersion is None:
-            targetVersion = self.context['databasePkg'].versions[-1]
+            targetVersion = self.context['mysqlSchemaPackage'].versions[-1]
 
         # Get module for target version
         targetVersMod = importlib.import_module(
-                self.context['databasePkg'].__name__ + '.v' +
+                self.context['mysqlSchemaPackage'].__name__ + '.v' +
                 str(targetVersion))
 
         # Make sure it has an upgrade function
@@ -430,7 +329,8 @@ class CommandLinePlugin(CLPluginBase):
 
         This will call the application's target version's overlay function. 
         '''
-        Coronado.configureLogging(level=logLevel, format=logFormat)
+        logging.basicConfig(level=getattr(logging, logLevel.upper(),
+            logging.NOTSET), format=logFormat)
 
         currentVersion = self.getSchemaVersion()
 
@@ -446,11 +346,11 @@ class CommandLinePlugin(CLPluginBase):
 
         # Default target version is the latest one available
         if targetVersion is None:
-            targetVersion = self.context['databasePkg'].versions[-1]
+            targetVersion = self.context['mysqlSchemaPackage'].versions[-1]
 
         # Get module for target version
         targetVersMod = importlib.import_module(
-                self.context['databasePkg'].__name__ + '.v' +
+                self.context['mysqlSchemaPackage'].__name__ + '.v' +
                 str(targetVersion))
 
         # Make sure it has an overlay function
@@ -486,7 +386,8 @@ class CommandLinePlugin(CLPluginBase):
         no reference version is specified, this will trim with reference to the
         currently installed schema version.
         '''
-        Coronado.configureLogging(level=logLevel, format=logFormat)
+        logging.basicConfig(level=getattr(logging, logLevel.upper(),
+            logging.NOTSET), format=logFormat)
 
         if referenceVersion is None:
             referenceVersion = self.getSchemaVersion()
@@ -497,7 +398,7 @@ class CommandLinePlugin(CLPluginBase):
 
         # Get module for target version
         refVersMod = importlib.import_module(
-                self.context['databasePkg'].__name__ + '.v' + \
+                self.context['mysqlSchemaPackage'].__name__ + '.v' + \
                         str(referenceVersion))
 
         # Make sure it has a trim function
@@ -529,127 +430,3 @@ def askYesOrNoQuestion(question):
     while cfm != 'y' and cfm != 'n':
         cfm = raw_input('Please type y or n: ')
     return cfm
-
-
-
-def _installFixture(database, fixture, ignoreConflicts):
-    if 'tableOrder' not in fixture:
-        return
-
-    # Install fixture into database
-    for tableName in fixture['tableOrder']:
-        logger.info('Installing table %s', tableName)
-        for row in fixture[tableName]:
-            query = 'INSERT INTO ' + tableName + ' (' \
-                    + ','.join(row.keys()) \
-                    + ') VALUES (' + '%s' + ',%s' * (len(row) -1) + ')'
-            with closing(database.cursor()) as cursor:
-                try:
-                    cursor.execute(query, tuple(row.values()))
-                except pymysql.IntegrityError:
-                    if ignoreConflicts:
-                        logger.info('Ignoring conflict in table %s', tableName)
-                        continue
-                    else:
-                        raise
-
-
-def installAFixture(database, fixture, ignoreConflicts=False):
-    # If there is no "self" key in self.fixture, that means the
-    # entire fixture dict is the self fixture
-    if 'self' not in fixture:
-        _installFixture(database, fixture, ignoreConflicts)
-    else:
-        # Fixtures for multiple apps are given
-        for appName, fix in fixture.items():
-            if appName == 'self':
-                _installFixture(database, fix, ignoreConflicts)
-            else:
-                # Output fixture into a JSON file and wait for confirmation
-                # from user that it has been loaded into the correct app
-                f = tempfile.NamedTemporaryFile(
-                        prefix=appName + '-', suffix='.json',
-                        delete=False)
-                json.dump(fix, f)
-                f.flush()
-                raw_input(('Please load the file "%s" into a test ' +
-                    'instance of "%s". Press ENTER to continue.')
-                    % (f.name, appName))
-
-
-class FixtureMixin(Coronado.Testing.TestRoot):
-    '''
-    Database fixture mixin for TestCase.
-
-    Implement _getFixture() to return either a dictionary or a
-    JSON file path containing a fixture. The fixture should be
-    a dictionary mapping table names to rows.
-    '''
-
-    def __init__(self, *args, **kwargs):
-        '''
-        A "context" keyword argument is required. It should be a dictionary
-        containing at least the following mappings:
-
-        database => MySQL database connection
-        mysql => dictionary of MySQL connection arguments: must contain at least
-                 user, password, dbName
-        '''
-        context = kwargs['context']
-        self._database = context['database']
-        self._mysqlArgs = context['mysql']
-
-        # Call parent constructor
-        super().__init__(*args, **kwargs)
-
-
-    def setUp(self):
-        # Call parent version
-        super().setUp()
-
-        # Get the fixture
-        fixture = self._getFixture()
-
-        # If fixture is a file path, load it as JSON
-        if isinstance(fixture, str):
-            fixture = json.load(open(fixture, encoding='utf-8'))
-
-        # Fixture must be a dictionary
-        if not isinstance(fixture, dict):
-            raise IllegalArgument('fixture must be a dictionary')
-
-        # Install the fixture
-        installAFixture(self._database, fixture)
-
-
-    def tearDown(self):
-        '''
-        Truncate all tables.
-        '''
-        # Call parent version
-        super().tearDown()
-
-        if self._mysqlArgs is None:
-            return
-
-        # Credit: http://stackoverflow.com/a/8912749/1196816
-        cmd = ("mysql -u %s -p'%s' -Nse 'show tables' %s " \
-                + "| while read table; do mysql -u %s -p'%s' " \
-                + "-e \"truncate table $table\" " \
-                + "%s; done") % (
-                        self._mysqlArgs['user'],
-                        self._mysqlArgs['password'],
-                        self._mysqlArgs['dbName'],
-                        self._mysqlArgs['user'],
-                        self._mysqlArgs['password'],
-                        self._mysqlArgs['dbName'])
-
-        subprocess.check_call(cmd, shell=True)
-
-
-    def _getFixture(self):
-        return {}
-
-
-    _database = None
-    _mysqlArgs = None
