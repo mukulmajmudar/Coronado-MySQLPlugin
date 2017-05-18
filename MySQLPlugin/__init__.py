@@ -7,6 +7,7 @@ import importlib
 import tempfile
 import time
 import subprocess
+import asyncio
 
 import argh
 from argh import CommandError
@@ -25,7 +26,8 @@ config = \
     'mysqlUser': None,
     'mysqlPassword': None,
     'mysqpDbName': None,
-    'mySchemaFilePath': None
+    'mySchemaFilePath': None,
+    'connRetryIntervalSecs': 5
 }
 
 def getMysqlConnection(context):
@@ -56,20 +58,32 @@ class AppPlugin(AppPluginBase):
     def getId(self):
         return 'mysqlPlugin'
 
-    def start(self, context):
+    async def start(self, context):
         self.context = context
 
         if 'database' not in context:
-            context['database'] = getMysqlConnection(context)
+            attempt = 0
+            while True:
+                try:
+                    attempt += 1
+                    context['database'] = getMysqlConnection(context)
+                except pymysql.OperationalError:
+                    if attempt == 10:
+                        raise 
 
-        if 'getNewDbConnection' not in context:
-            context['getNewDbConnection'] = \
-                partial(getMysqlConnection, context)
+                    # Assume database is not up yet, sleep
+                    logger.info('Could not connect to MySQL, will ' +
+                        'try again after %s seconds...',
+                        context['connRetryIntervalSecs'])
+                    await asyncio.sleep(context['connRetryIntervalSecs'])
+                else:
+                    logger.info('Connected to MySQL successfully.')
+                    break
 
         # Check Database schema version matches what is expected
         self.checkDbSchemaVersion()
 
-        self.context['shortcutAttrs'] += ['database', 'getNewDbConnection']
+        self.context['shortcutAttrs'].append('database')
 
 
     def getCurrDbSchemaVersion(self):
