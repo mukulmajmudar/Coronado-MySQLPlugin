@@ -25,7 +25,7 @@ config = \
     'mysqlPort': 3306,
     'mysqlUser': None,
     'mysqlPassword': None,
-    'mysqpDbName': None,
+    'mysqlDbName': None,
     'mySchemaFilePath': None,
     'connRetryIntervalSecs': 5
 }
@@ -72,8 +72,9 @@ class AppPlugin(AppPluginBase):
                         raise 
 
                     # Assume database is not up yet, sleep
-                    logger.info('Could not connect to MySQL, will ' +
-                        'try again after %s seconds...',
+                    logger.info('Could not connect to MySQL database %s, ' +
+                        'will try again after %s seconds...',
+                        context['mysqlDbName'],
                         context['connRetryIntervalSecs'])
                     await asyncio.sleep(context['connRetryIntervalSecs'])
                 else:
@@ -227,7 +228,7 @@ class CommandLinePlugin(CLPluginBase):
                 query = 'INSERT INTO ' + table['name'] + ' (' \
                         + ','.join(row.keys()) \
                         + ') VALUES (' + '%s' + ',%s' * (len(row) -1) + ')'
-                with closing(database.cursor()) as cursor:
+                with closing(db.cursor()) as cursor:
                     try:
                         cursor.execute(query, tuple(row.values()))
                     except pymysql.IntegrityError:
