@@ -18,4 +18,4 @@ def whereEquals(equalConditions, coordinator='AND'):
 
 
 def makePlaceholderList(sourceList):
-    return ','.join(['%s'] * len(sourceList))
+    return ','.join(['%s'] * len(sourceList)) or '""'
