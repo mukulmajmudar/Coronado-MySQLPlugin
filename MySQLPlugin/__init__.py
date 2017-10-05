@@ -8,6 +8,11 @@ import tempfile
 import time
 import subprocess
 import asyncio
+import multiprocessing
+from datetime import datetime
+from io import StringIO
+import traceback
+import sys
 
 import argh
 from argh import CommandError
@@ -15,6 +20,7 @@ from Coronado.Plugin import AppPlugin as AppPluginBase, \
         CommandLinePlugin as CLPluginBase
 import pymysql
 from pymysql.cursors import DictCursor
+import boto3
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +33,10 @@ config = \
     'mysqlPassword': None,
     'mysqlDbName': None,
     'mySchemaFilePath': None,
-    'connRetryIntervalSecs': 5
+    'connRetryIntervalSecs': 5,
+    'mysqlBackupIntervalSecs': 0,
+    'mysqlBackupS3BucketName': None,
+    'mysqlBackupS3KeyPrefix': ''
 }
 
 def getMysqlConnection(context):
@@ -54,6 +63,7 @@ class SchemaVersionMismatch(Exception):
 
 class AppPlugin(AppPluginBase):
     context = None
+    backupProcess = None
 
     def getId(self):
         return 'mysqlPlugin'
@@ -79,12 +89,69 @@ class AppPlugin(AppPluginBase):
                     await asyncio.sleep(context['connRetryIntervalSecs'])
                 else:
                     logger.info('Connected to MySQL successfully.')
+
+                    if context['mysqlBackupIntervalSecs'] > 0 and \
+                            context['mysqlBackupS3BucketName']:
+                        logger.info('Starting MySQL backup on Amazon S3.')
+                        def b():
+                            time.sleep(context['mysqlBackupIntervalSecs'])
+                            self.backup()
+                        self.backupProcess = multiprocessing.Process(
+                                target=b)
+                        self.backupProcess.start()
+                    else:
+                        logger.info('MySQL backup on Amazon S3 not setup.')
                     break
 
         # Check Database schema version matches what is expected
         self.checkDbSchemaVersion()
 
         self.context['shortcutAttrs'].append('database')
+
+
+    def destroy(self):
+        if self.backupProcess is not None:
+            self.backupProcess.terminate()
+
+
+    def backup(self):
+        s3ResourceClient = boto3.resource('s3')
+        while True:
+            logger.info('Backing up MySQL database %s to Amazon S3.',
+                    self.context['mysqlDbName'])
+            backupFilePath = None
+            try:
+                backupFileName = '{}-{}.sql'.format(self.context['mysqlDbName'],
+                        str(datetime.utcnow()))
+                backupFilePath = '/tmp/' + backupFileName
+                cmd = 'mysqldump --host={} --user={} --password="{}" {} > "{}"'.format(
+                    self.context['mysqlHost'],
+                    self.context['mysqlUser'],
+                    self.context['mysqlPassword'],
+                    self.context['mysqlDbName'],
+                    backupFilePath)
+                subprocess.check_call(cmd, shell=True)
+                if self.context['mysqlBackupS3KeyPrefix']:
+                    key = '{}/{}'.format(self.context['mysqlBackupS3KeyPrefix'],
+                            backupFileName)
+                else:
+                    key = backupFileName
+                obj = s3ResourceClient.Object(
+                        self.context['mysqlBackupS3BucketName'], key)
+                obj.put(Body=open(backupFilePath, 'rb'),
+                        ServerSideEncryption='AES256')
+            except:
+                tbStringIO = StringIO()
+                traceback.print_exception(*sys.exc_info(), None, tbStringIO)
+                logger.error(tbStringIO.getvalue())
+            finally:
+                if backupFilePath:
+                    try:
+                        os.remove(backupFilePath)
+                    except:
+                        logger.error('Error removing MySQL dump file.')
+
+            time.sleep(self.context['mysqlBackupIntervalSecs'])
 
 
     def getCurrDbSchemaVersion(self):
