@@ -93,11 +93,11 @@ class AppPlugin(AppPluginBase):
                     if context['mysqlBackupIntervalSecs'] > 0 and \
                             context['mysqlBackupS3BucketName']:
                         logger.info('Starting MySQL backup on Amazon S3.')
-                        def b():
-                            time.sleep(context['mysqlBackupIntervalSecs'])
-                            self.backup()
+                        self.backupEvt = multiprocessing.Event()
+                        def b(evt):
+                            self.backup(evt)
                         self.backupProcess = multiprocessing.Process(
-                                target=b)
+                                target=b, args=(self.backupEvt,))
                         self.backupProcess.start()
                     else:
                         logger.info('MySQL backup on Amazon S3 not setup.')
@@ -109,14 +109,19 @@ class AppPlugin(AppPluginBase):
         self.context['shortcutAttrs'].append('database')
 
 
-    def destroy(self):
+    def destroy(self, context):
         if self.backupProcess is not None:
-            self.backupProcess.terminate()
+            logger.info('Terminating MySQL backup process')
+            self.backupEvt.set()
+            logger.info('MySQL backup process terminated')
 
 
-    def backup(self):
+    def backup(self, evt):
         s3ResourceClient = boto3.resource('s3')
         while True:
+            ret = evt.wait(self.context['mysqlBackupIntervalSecs'])
+            if ret:
+                break
             logger.info('Backing up MySQL database %s to Amazon S3.',
                     self.context['mysqlDbName'])
             backupFilePath = None
