@@ -404,7 +404,8 @@ class CommandLinePlugin(CLPluginBase):
             help='Python-like log format (see Python docs for details)')
     def overlay(self, targetVersion=None,
             logLevel='warning', 
-            logFormat='%(levelname)s:%(name)s (at %(asctime)s): %(message)s'):
+            logFormat='%(levelname)s:%(name)s (at %(asctime)s): %(message)s',
+            **kwargs):
         '''
         Overlay a schema on top of the currently installed one.
 
@@ -449,7 +450,7 @@ class CommandLinePlugin(CLPluginBase):
         with closing(getMysqlConnection(self.context)) as db:
             context = self.context.copy()
             context['database'] = db
-            targetVersMod.overlay(context, fromVersion=currentVersion)
+            targetVersMod.overlay(context, fromVersion=currentVersion, **kwargs)
 
 
     @argh.arg('-r', '--referenceVersion', 
@@ -483,7 +484,7 @@ class CommandLinePlugin(CLPluginBase):
             raise CommandError('It seems there is no schema ' +
                 'currently installed.')
 
-        # Get module for target version
+        # Get module for reference version
         refVersMod = importlib.import_module(
                 self.context['mysqlSchemaPackage'].__name__ + '.v' + \
                         str(referenceVersion))
@@ -503,7 +504,7 @@ class CommandLinePlugin(CLPluginBase):
 
         if response == 'y':
             # Delegate to appropriate upgrade function
-            with closing(getConnection()) as db:
+            with closing(getMysqlConnection(self.context)) as db:
                 context = self.context.copy()
                 context['database'] = db
                 refVersMod.trim(context, trimVersion)
@@ -513,7 +514,7 @@ class CommandLinePlugin(CLPluginBase):
 
 
 def askYesOrNoQuestion(question):
-    cfm = raw_input(question + ' (y/n): ')
+    cfm = input(question + ' (y/n): ')
     while cfm != 'y' and cfm != 'n':
-        cfm = raw_input('Please type y or n: ')
+        cfm = input('Please type y or n: ')
     return cfm
